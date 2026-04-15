@@ -28,15 +28,12 @@ jobs:
       - name: Run WEEKLY pipeline
         env:
           GCP_CREDENTIALS: ${{ secrets.GCP_CREDENTIALS }}
-          ARTIFACTS_FOLDER_ID: ${{ secrets.ARTIFACTS_FOLDER_ID }}
         run: python weekly.py
 
       # ── שלב 2: סקורינג יומי (מיד אחרי) ──
       - name: Run DAILY pipeline
         env:
           GCP_CREDENTIALS: ${{ secrets.GCP_CREDENTIALS }}
-          ARTIFACTS_FOLDER_ID: ${{ secrets.ARTIFACTS_FOLDER_ID }}
-          DAILY_FOLDER_ID: ${{ secrets.DAILY_FOLDER_ID }}
         run: python daily.py
 
       # ── שלב 3: מייל סיכום ──
@@ -49,8 +46,9 @@ jobs:
           secure: true
           username: ${{ secrets.GMAIL_USER }}
           password: ${{ secrets.GMAIL_APP_PASSWORD }}
-          subject: "${{ job.status == 'success' && '✅ TEST PASSED' || '❌ TEST FAILED' }} — Fraud Pipeline Test Run (${{ env.RUN_DATE }})"
+          subject: "${{ job.status == 'success' && '✅ TEST PASSED' || '❌ TEST FAILED' }} — Fraud Pipeline Test Run (${{ github.run_id }})"
           to: hila.hilel@fiverr.com
           from: "Fraud Detection Bot <${{ secrets.GMAIL_USER }}>"
           html_body: file:///tmp/email_summary.html
+          attachments: /tmp/risky_transactions_explained_*.xlsx
           ignore_cert: false

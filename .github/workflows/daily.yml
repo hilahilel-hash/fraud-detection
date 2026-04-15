@@ -5,7 +5,7 @@ on:
     # 08:00 UTC = 11:00 Israel Summer Time (UTC+3)
     # In winter (UTC+2) change to: '0 9 * * *'
     - cron: '0 8 * * *'
-  workflow_dispatch:  # allows manual trigger from GitHub UI
+  workflow_dispatch:
 
 jobs:
   score:
@@ -28,14 +28,20 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      - name: Download latest model artifacts
+        uses: dawidd6/action-download-artifact@v6
+        with:
+          workflow: weekly.yml
+          name: fraud-model-artifacts
+          path: /tmp/fraud_artifacts/
+          search_artifacts: true
+
       - name: Run daily scoring pipeline
         env:
           GCP_CREDENTIALS: ${{ secrets.GCP_CREDENTIALS }}
-          ARTIFACTS_FOLDER_ID: ${{ secrets.ARTIFACTS_FOLDER_ID }}
-          DAILY_FOLDER_ID: ${{ secrets.DAILY_FOLDER_ID }}
         run: python daily.py
 
-      - name: Send email summary
+      - name: Send email with Excel attachment
         if: always()
         uses: dawidd6/action-send-mail@v3
         with:
@@ -48,4 +54,5 @@ jobs:
           to: hila.hilel@fiverr.com
           from: "Fraud Detection Bot <${{ secrets.GMAIL_USER }}>"
           html_body: file:///tmp/email_summary.html
+          attachments: /tmp/risky_transactions_explained_*.xlsx
           ignore_cert: false

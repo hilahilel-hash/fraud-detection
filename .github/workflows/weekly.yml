@@ -28,5 +28,11 @@ jobs:
       - name: Run weekly training pipeline
         env:
           GCP_CREDENTIALS: ${{ secrets.GCP_CREDENTIALS }}
-          ARTIFACTS_FOLDER_ID: ${{ secrets.ARTIFACTS_FOLDER_ID }}
         run: python weekly.py
+
+      - name: Upload model artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: fraud-model-artifacts
+          path: /tmp/fraud_artifacts/
+          retention-days: 90

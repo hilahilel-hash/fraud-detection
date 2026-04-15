@@ -2,7 +2,7 @@
 """
 Fiverr Fraud Detection - Weekly Training Pipeline (v11.1)
 Runs every Sunday at 08:00 Israel time via GitHub Actions.
-Saves trained artifacts to Google Drive (ARTIFACTS_FOLDER_ID).
+Saves trained artifacts to /tmp/fraud_artifacts/ (uploaded via GitHub Actions).
 """
 
 import warnings
@@ -29,7 +29,7 @@ from sklearn.metrics import roc_auc_score, average_precision_score, precision_re
 from sklearn.ensemble import IsolationForest
 from imblearn.over_sampling import BorderlineSMOTE
 
-from drive_utils import get_credentials, upload_file_to_drive, get_drive_service
+from drive_utils import get_credentials
 
 # =================== AUTH ===================
 SCOPES = [
@@ -41,7 +41,6 @@ credentials = get_credentials()
 client = bigquery.Client(project="fiverr-bq-payments-adhoc-prod", credentials=credentials)
 print("BigQuery client initialized.")
 
-ARTIFACTS_FOLDER_ID = os.environ["ARTIFACTS_FOLDER_ID"]
 LOCAL_ARTIFACT_DIR = "/tmp/fraud_artifacts"
 os.makedirs(LOCAL_ARTIFACT_DIR, exist_ok=True)
 
@@ -511,13 +510,7 @@ def run_pipeline(df, threshold_method="percentile"):
     ).to_csv(os.path.join(LOCAL_ARTIFACT_DIR, "feature_importance.csv"), index=False)
     artifact_paths.append(os.path.join(LOCAL_ARTIFACT_DIR, "feature_importance.csv"))
 
-    # =================== UPLOAD TO DRIVE ===================
-    print("\n[info] Uploading artifacts to Google Drive...")
-    drive_service = get_drive_service()
-    for path in artifact_paths:
-        upload_file_to_drive(path, ARTIFACTS_FOLDER_ID, drive_service)
-
-    print(f"\n[✓] All artifacts uploaded to Drive folder: {ARTIFACTS_FOLDER_ID}")
+    print(f"\n[✓] All artifacts saved to {LOCAL_ARTIFACT_DIR} (GitHub Actions will upload them)")
     return model, list(Xtr.columns), alpha_blend, thresholds
 
 
@@ -528,4 +521,4 @@ if __name__ == "__main__":
     model, feats, alpha, thresholds = run_pipeline(df, threshold_method="percentile")
     print("\n[Summary] Pipeline completed successfully!")
     print(f"  - Blending α: {alpha:.2f}")
-    print(f"  - Artifacts uploaded to Drive folder: {ARTIFACTS_FOLDER_ID}")
+    print(f"  - Artifacts saved to: {LOCAL_ARTIFACT_DIR}")

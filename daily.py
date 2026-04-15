@@ -22,15 +22,13 @@ matplotlib.use("Agg")
 
 from google.cloud import bigquery
 
-from drive_utils import get_credentials, get_drive_service, download_file_from_drive, upload_file_to_drive
+from drive_utils import get_credentials
 
 # =================== AUTH ===================
 credentials = get_credentials()
 client = bigquery.Client(project="fiverr-bq-payments-adhoc-prod", credentials=credentials)
 print("BigQuery client initialized.")
 
-ARTIFACTS_FOLDER_ID = os.environ["ARTIFACTS_FOLDER_ID"]
-DAILY_FOLDER_ID = os.environ["DAILY_FOLDER_ID"]
 LOCAL_ARTIFACT_DIR = "/tmp/fraud_artifacts"
 os.makedirs(LOCAL_ARTIFACT_DIR, exist_ok=True)
 
@@ -65,21 +63,6 @@ WHERE _partitiondate >= current_date()-1
 """
 
 
-# =================== DOWNLOAD ARTIFACTS ===================
-def download_artifacts():
-    drive_service = get_drive_service()
-    required = [
-        "fraud_model.joblib", "fraud_features.joblib", "iforest_model.joblib",
-        "rule_weights.joblib", "rule_thresholds.joblib", "label_encoders.joblib",
-        "blend_alpha.txt",
-    ]
-    for name in required:
-        download_file_from_drive(
-            name, ARTIFACTS_FOLDER_ID,
-            os.path.join(LOCAL_ARTIFACT_DIR, name),
-            drive_service,
-        )
-    print("[info] All artifacts downloaded.")
 
 
 # =================== HELPERS ===================
@@ -456,9 +439,6 @@ def run_daily_pipeline(df):
 
 # =================== EXPORT & UPLOAD ===================
 if __name__ == "__main__":
-    # Download artifacts from Drive
-    download_artifacts()
-
     # Query BigQuery
     print(f"\n[info] Running BigQuery query for {yesterday}...")
     df = client.query(q).to_dataframe()
@@ -514,12 +494,6 @@ if __name__ == "__main__":
         high_value[cols_to_use].to_excel(writer, sheet_name="High_Value_Explained", index=False)
 
     print(f"\n[info] Excel saved locally: {excel_path}")
-
-    # Upload Excel to Drive
-    drive_service = get_drive_service()
-    upload_file_to_drive(excel_path, DAILY_FOLDER_ID, drive_service)
-
-    print(f"\n[✓] Excel uploaded to Drive folder: {DAILY_FOLDER_ID}")
 
     # Generate HTML email summary
     generate_email_html(results, yesterday)
