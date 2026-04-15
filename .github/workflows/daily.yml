@@ -3,7 +3,6 @@ name: Daily Fraud Scoring
 on:
   schedule:
     # 08:00 UTC = 11:00 Israel Summer Time (UTC+3)
-    # In winter (UTC+2) change to: '0 9 * * *'
     - cron: '0 8 * * *'
   workflow_dispatch:
 
@@ -13,9 +12,6 @@ jobs:
     timeout-minutes: 60
 
     steps:
-      - name: Set run date
-        run: echo "RUN_DATE=$(date +'%Y-%m-%d')" >> $GITHUB_ENV
-
       - name: Checkout code
         uses: actions/checkout@v4
 
@@ -41,18 +37,44 @@ jobs:
           GCP_CREDENTIALS: ${{ secrets.GCP_CREDENTIALS }}
         run: python daily.py
 
-      - name: Send email with Excel attachment
+      - name: Send Slack notification
         if: always()
-        uses: dawidd6/action-send-mail@v3
+        uses: slackapi/slack-github-action@v1.27.0
         with:
-          server_address: smtp.gmail.com
-          server_port: 465
-          secure: true
-          username: ${{ secrets.GMAIL_USER }}
-          password: ${{ secrets.GMAIL_APP_PASSWORD }}
-          subject: "${{ job.status == 'success' && '✅' || '❌' }} Fraud Detection Daily Report — ${{ env.RUN_DATE }}"
-          to: hila.hilel@fiverr.com
-          from: "Fraud Detection Bot <${{ secrets.GMAIL_USER }}>"
-          html_body: file:///tmp/email_summary.html
-          attachments: /tmp/risky_transactions_explained_*.xlsx
-          ignore_cert: false
+          payload: |
+            {
+              "text": "${{ job.status == 'success' && '✅ *Fraud Detection Daily Report*' || '❌ *Fraud Detection FAILED*' }}",
+              "attachments": [
+                {
+                  "color": "${{ job.status == 'success' && '#36a64f' || '#ff0000' }}",
+                  "fields": [
+                    {
+                      "title": "Date",
+                      "value": "${{ github.run_id }}",
+                      "short": true
+                    },
+                    {
+                      "title": "Status",
+                      "value": "${{ job.status }}",
+                      "short": true
+                    },
+                    {
+                      "title": "Results",
+                      "value": "Excel saved as GitHub Actions artifact",
+                      "short": false
+                    }
+                  ]
+                }
+              ]
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_WEBHOOK_TYPE: INCOMING_WEBHOOK
+
+      - name: Upload Excel as artifact
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: daily-fraud-report-${{ github.run_id }}
+          path: /tmp/risky_transactions_explained_*.xlsx
+          retention-days: 30
