@@ -41,7 +41,7 @@ jobs:
           username: ${{ secrets.GMAIL_USER }}
           password: ${{ secrets.GMAIL_APP_PASSWORD }}
           subject: "${{ job.status == 'success' && '✅ TEST PASSED' || '❌ TEST FAILED' }} — Fraud Pipeline Test Run"
-          to: hila.hilel@fiverr.com
+          to: hila.hilel@fiverr.com, gabriella.sacerdote@fiverr.com
           from: "Fraud Detection Bot <${{ secrets.GMAIL_USER }}>"
           html_body: file:///tmp/email_summary.html
           attachments: /tmp/risky_transactions_explained_*.xlsx

@@ -83,7 +83,7 @@ jobs:
           username: ${{ secrets.GMAIL_USER }}
           password: ${{ secrets.GMAIL_APP_PASSWORD }}
           subject: "${{ job.status == 'success' && '✅' || '❌' }} Weekly Fraud Training — ${{ job.status }}"
-          to: hila.hilel@fiverr.com
+          to: hila.hilel@fiverr.com, gabriella.sacerdote@fiverr.com
           from: "Fraud Detection Bot <${{ secrets.GMAIL_USER }}>"
           body: "Weekly fraud training pipeline finished with status: ${{ job.status }}"
           ignore_cert: false
