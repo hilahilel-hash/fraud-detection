@@ -1,21 +1,27 @@
-"""Utility functions for Google Drive access using a service account."""
+"""Utility functions for Google Drive access using user credentials (refresh token)."""
 import os
-import io
 import json
 
-from google.oauth2 import service_account
+from google.oauth2.credentials import Credentials
+from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload
 
-SCOPES = [
-    "https://www.googleapis.com/auth/bigquery",
-    "https://www.googleapis.com/auth/drive",
-]
-
 
 def get_credentials():
-    sa_info = json.loads(os.environ["GCP_SA_KEY"])
-    return service_account.Credentials.from_service_account_info(sa_info, scopes=SCOPES)
+    """Load user credentials from GCP_CREDENTIALS env variable (authorized_user format)."""
+    creds_info = json.loads(os.environ["GCP_CREDENTIALS"])
+
+    creds = Credentials(
+        token=None,
+        refresh_token=creds_info["refresh_token"],
+        token_uri=creds_info.get("token_uri", "https://oauth2.googleapis.com/token"),
+        client_id=creds_info["client_id"],
+        client_secret=creds_info["client_secret"],
+    )
+    # Refresh to get a valid access token
+    creds.refresh(Request())
+    return creds
 
 
 def get_drive_service():

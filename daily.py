@@ -20,7 +20,6 @@ from sklearn.ensemble import IsolationForest
 import matplotlib
 matplotlib.use("Agg")
 
-from google.oauth2 import service_account
 from google.cloud import bigquery
 
 from drive_utils import get_credentials, get_drive_service, download_file_from_drive, upload_file_to_drive

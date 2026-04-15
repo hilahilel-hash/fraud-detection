@@ -27,14 +27,14 @@ jobs:
       # ── שלב 1: אימון שבועי ──
       - name: Run WEEKLY pipeline
         env:
-          GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}
+          GCP_CREDENTIALS: ${{ secrets.GCP_CREDENTIALS }}
           ARTIFACTS_FOLDER_ID: ${{ secrets.ARTIFACTS_FOLDER_ID }}
         run: python weekly.py
 
       # ── שלב 2: סקורינג יומי (מיד אחרי) ──
       - name: Run DAILY pipeline
         env:
-          GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}
+          GCP_CREDENTIALS: ${{ secrets.GCP_CREDENTIALS }}
           ARTIFACTS_FOLDER_ID: ${{ secrets.ARTIFACTS_FOLDER_ID }}
           DAILY_FOLDER_ID: ${{ secrets.DAILY_FOLDER_ID }}
         run: python daily.py

@@ -22,7 +22,6 @@ import xgboost as xgb
 import joblib
 import re
 
-from google.oauth2 import service_account
 from google.cloud import bigquery
 
 from sklearn.preprocessing import LabelEncoder
@@ -39,10 +38,7 @@ SCOPES = [
 ]
 
 credentials = get_credentials()
-client = bigquery.Client(
-    project="fiverr-bq-payments-adhoc-prod",
-    credentials=credentials,
-)
+client = bigquery.Client(project="fiverr-bq-payments-adhoc-prod", credentials=credentials)
 print("BigQuery client initialized.")
 
 ARTIFACTS_FOLDER_ID = os.environ["ARTIFACTS_FOLDER_ID"]
