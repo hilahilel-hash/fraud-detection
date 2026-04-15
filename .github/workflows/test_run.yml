@@ -1,0 +1,56 @@
+name: Test Run (Weekly + Daily)
+
+on:
+  workflow_dispatch:  # הפעלה ידנית בלבד מה-GitHub UI
+
+jobs:
+  weekly-then-daily:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+
+    steps:
+      - name: Set run date
+        run: echo "RUN_DATE=$(date +'%Y-%m-%d %H:%M UTC')" >> $GITHUB_ENV
+
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      # ── שלב 1: אימון שבועי ──
+      - name: Run WEEKLY pipeline
+        env:
+          GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}
+          ARTIFACTS_FOLDER_ID: ${{ secrets.ARTIFACTS_FOLDER_ID }}
+        run: python weekly.py
+
+      # ── שלב 2: סקורינג יומי (מיד אחרי) ──
+      - name: Run DAILY pipeline
+        env:
+          GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}
+          ARTIFACTS_FOLDER_ID: ${{ secrets.ARTIFACTS_FOLDER_ID }}
+          DAILY_FOLDER_ID: ${{ secrets.DAILY_FOLDER_ID }}
+        run: python daily.py
+
+      # ── שלב 3: מייל סיכום ──
+      - name: Send test completion email
+        if: always()
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: smtp.gmail.com
+          server_port: 465
+          secure: true
+          username: ${{ secrets.GMAIL_USER }}
+          password: ${{ secrets.GMAIL_APP_PASSWORD }}
+          subject: "${{ job.status == 'success' && '✅ TEST PASSED' || '❌ TEST FAILED' }} — Fraud Pipeline Test Run (${{ env.RUN_DATE }})"
+          to: hila.hilel@fiverr.com
+          from: "Fraud Detection Bot <${{ secrets.GMAIL_USER }}>"
+          html_body: file:///tmp/email_summary.html
+          ignore_cert: false

@@ -1,0 +1,13 @@
+google-cloud-bigquery
+google-auth
+google-api-python-client
+pyarrow
+xgboost
+scikit-learn
+imbalanced-learn
+pandas
+numpy
+matplotlib
+joblib
+xlsxwriter
+category_encoders
