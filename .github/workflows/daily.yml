@@ -2,16 +2,56 @@ name: Daily Fraud Scoring
 
 on:
   schedule:
-    # 08:00 UTC = 11:00 Israel Summer Time (UTC+3)
+    # First attempt: 08:00 UTC = 11:00 Israel Summer Time
     - cron: '0 8 * * *'
+    # Retry attempt: 11:00 UTC = 14:00 Israel Summer Time (only runs if first failed)
+    - cron: '0 11 * * *'
   workflow_dispatch:
 
 jobs:
+  check-previous:
+    runs-on: ubuntu-latest
+    outputs:
+      should_run: ${{ steps.check.outputs.should_run }}
+    steps:
+      - name: Check if we should run
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          HOUR=$(date -u +%H)
+          # At 08:00 UTC — always run
+          if [ "$HOUR" = "08" ]; then
+            echo "should_run=true" >> $GITHUB_OUTPUT
+            echo "First attempt at 11:00 — running."
+            exit 0
+          fi
+          # At 11:00 UTC — only run if the 08:00 run failed
+          LAST_STATUS=$(gh run list \
+            --workflow=daily.yml \
+            --repo ${{ github.repository }} \
+            --limit 5 \
+            --json status,conclusion,createdAt \
+            --jq '[.[] | select(.createdAt | startswith("'"$(date -u +%Y-%m-%d)"'"))] | first | .conclusion')
+          echo "Last run conclusion today: $LAST_STATUS"
+          if [ "$LAST_STATUS" = "failure" ] || [ "$LAST_STATUS" = "null" ] || [ -z "$LAST_STATUS" ]; then
+            echo "should_run=true" >> $GITHUB_OUTPUT
+            echo "First attempt failed — running retry at 14:00."
+          else
+            echo "should_run=false" >> $GITHUB_OUTPUT
+            echo "First attempt succeeded — skipping retry."
+          fi
+
   score:
+    needs: check-previous
+    if: needs.check-previous.outputs.should_run == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 60
 
     steps:
+      - name: Set run date
+        run: echo "RUN_DATE=$(date +'%Y-%m-%d')" >> $GITHUB_ENV
+
       - name: Checkout code
         uses: actions/checkout@v4
 

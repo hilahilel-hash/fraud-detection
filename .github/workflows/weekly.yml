@@ -2,13 +2,49 @@ name: Weekly Fraud Training
 
 on:
   schedule:
-    # 05:00 UTC = 08:00 Israel Summer Time (UTC+3)
-    # In winter (UTC+2) change to: '0 6 * * 0'
+    # First attempt: 05:00 UTC = 08:00 Israel Summer Time
     - cron: '0 5 * * 0'
-  workflow_dispatch:  # allows manual trigger from GitHub UI
+    # Retry attempt: 10:00 UTC = 13:00 Israel Summer Time (only runs if first failed)
+    - cron: '0 10 * * 0'
+  workflow_dispatch:
 
 jobs:
+  check-previous:
+    runs-on: ubuntu-latest
+    outputs:
+      should_run: ${{ steps.check.outputs.should_run }}
+    steps:
+      - name: Check if we should run
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          HOUR=$(date -u +%H)
+          # At 05:00 UTC — always run
+          if [ "$HOUR" = "05" ]; then
+            echo "should_run=true" >> $GITHUB_OUTPUT
+            echo "First attempt at 08:00 — running."
+            exit 0
+          fi
+          # At 10:00 UTC — only run if the 05:00 run failed
+          LAST_STATUS=$(gh run list \
+            --workflow=weekly.yml \
+            --repo ${{ github.repository }} \
+            --limit 5 \
+            --json status,conclusion,createdAt \
+            --jq '[.[] | select(.createdAt | startswith("'"$(date -u +%Y-%m-%d)"'"))] | first | .conclusion')
+          echo "Last run conclusion today: $LAST_STATUS"
+          if [ "$LAST_STATUS" = "failure" ] || [ "$LAST_STATUS" = "null" ] || [ -z "$LAST_STATUS" ]; then
+            echo "should_run=true" >> $GITHUB_OUTPUT
+            echo "First attempt failed — running retry at 13:00."
+          else
+            echo "should_run=false" >> $GITHUB_OUTPUT
+            echo "First attempt succeeded — skipping retry."
+          fi
+
   train:
+    needs: check-previous
+    if: needs.check-previous.outputs.should_run == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 120
 
@@ -36,3 +72,18 @@ jobs:
           name: fraud-model-artifacts
           path: /tmp/fraud_artifacts/
           retention-days: 90
+
+      - name: Send email notification
+        if: always()
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: smtp.gmail.com
+          server_port: 465
+          secure: true
+          username: ${{ secrets.GMAIL_USER }}
+          password: ${{ secrets.GMAIL_APP_PASSWORD }}
+          subject: "${{ job.status == 'success' && '✅' || '❌' }} Weekly Fraud Training — ${{ job.status }}"
+          to: hila.hilel@fiverr.com
+          from: "Fraud Detection Bot <${{ secrets.GMAIL_USER }}>"
+          body: "Weekly fraud training pipeline finished with status: ${{ job.status }}"
+          ignore_cert: false
