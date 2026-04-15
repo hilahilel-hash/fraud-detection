@@ -31,39 +31,21 @@ jobs:
           GCP_CREDENTIALS: ${{ secrets.GCP_CREDENTIALS }}
         run: python daily.py
 
-      - name: Send Slack notification
+      - name: Send email notification
         if: always()
-        uses: slackapi/slack-github-action@v1.27.0
+        uses: dawidd6/action-send-mail@v3
         with:
-          payload: |
-            {
-              "text": "${{ job.status == 'success' && '✅ *TEST PASSED — Fraud Pipeline works!*' || '❌ *TEST FAILED — check GitHub Actions logs*' }}",
-              "attachments": [
-                {
-                  "color": "${{ job.status == 'success' && '#36a64f' || '#ff0000' }}",
-                  "fields": [
-                    {
-                      "title": "Run ID",
-                      "value": "${{ github.run_id }}",
-                      "short": true
-                    },
-                    {
-                      "title": "Status",
-                      "value": "${{ job.status }}",
-                      "short": true
-                    },
-                    {
-                      "title": "Logs",
-                      "value": "https://github.com/hilahilel-hash/fraud-detection/actions/runs/${{ github.run_id }}",
-                      "short": false
-                    }
-                  ]
-                }
-              ]
-            }
-        env:
-          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
-          SLACK_WEBHOOK_TYPE: INCOMING_WEBHOOK
+          server_address: smtp.gmail.com
+          server_port: 465
+          secure: true
+          username: ${{ secrets.GMAIL_USER }}
+          password: ${{ secrets.GMAIL_APP_PASSWORD }}
+          subject: "${{ job.status == 'success' && '✅ TEST PASSED' || '❌ TEST FAILED' }} — Fraud Pipeline Test Run"
+          to: hila.hilel@fiverr.com
+          from: "Fraud Detection Bot <${{ secrets.GMAIL_USER }}>"
+          html_body: file:///tmp/email_summary.html
+          attachments: /tmp/risky_transactions_explained_*.xlsx
+          ignore_cert: false
 
       - name: Upload Excel as artifact
         if: success()
