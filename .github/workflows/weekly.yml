@@ -2,10 +2,10 @@ name: Weekly Fraud Training
 
 on:
   schedule:
-    # First attempt: 05:00 UTC = 08:00 Israel Summer Time
-    - cron: '0 5 * * 0'
-    # Retry attempt: 10:00 UTC = 13:00 Israel Summer Time (only runs if first failed)
-    - cron: '0 10 * * 0'
+    # First attempt: 06:00 UTC = 09:00 Israel Summer Time
+    - cron: '0 6 * * 0'
+    # Retry attempt: 11:00 UTC = 14:00 Israel Summer Time (only runs if first failed)
+    - cron: '0 11 * * 0'
   workflow_dispatch:
 
 jobs:
@@ -21,9 +21,9 @@ jobs:
         run: |
           HOUR=$(date -u +%H)
           # At 05:00 UTC (first attempt) — always run
-          if [ "$HOUR" -lt "08" ]; then
+          if [ "$HOUR" -lt "09" ]; then
             echo "should_run=true" >> $GITHUB_OUTPUT
-            echo "First attempt at 08:00 — running."
+            echo "First attempt at 09:00 — running."
             exit 0
           fi
           # At 10:00 UTC (retry) — only run if no successful run exists today
