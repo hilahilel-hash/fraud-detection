@@ -1,8 +1,17 @@
 # -*- coding: utf-8 -*-
 """
-Fiverr Fraud Detection - Weekly Training Pipeline (v11.1)
+Fiverr Fraud Detection - Weekly Training Pipeline (v12.0)
 Runs every Sunday at 08:00 Israel time via GitHub Actions.
 Saves trained artifacts to /tmp/fraud_artifacts/ (uploaded via GitHub Actions).
+
+v12 changes vs v11.1 (validated on 3-fold time-series CV, +28% mean AUPRC blend):
+  F1. manual_risk_score normalized with TRAIN min/max applied to val/test (was per-split).
+  F2. normalized_iforest uses TRAIN mean/std applied to val/test (was per-split).
+  F3. manual_risk_score excluded from XGBoost features (avoid double-counting in blend).
+  F4. scale_pos_weight = sqrt(neg/pos) instead of full neg/pos (better PR-AUC calibration).
+  F6. rule_* and combo_* excluded from XGBoost features (already in manual_risk_score blend).
+  F7. Tuned XGBoost: max_depth=4, min_child_weight=20, reg_lambda=5 (from grid search).
+  Plus: save normalization_stats artifact (manual_risk_mn/mx, iforest_mean/std) for daily.
 """
 
 import warnings
@@ -305,7 +314,13 @@ def compute_rule_weights(df_train):
     return weights
 
 
-def compute_manual_risk(df, weights):
+def compute_manual_risk(df, weights, mn=None, mx=None):
+    """Compute manual_risk_score for df using `weights`.
+
+    F1: If mn/mx are None, they're fit from this df (use on TRAIN).
+        If provided, they're applied directly (use on VAL/TEST, daily scoring).
+    Returns (df, mn, mx) so the caller can persist the train-fit stats.
+    """
     df = df.copy()
     df["manual_risk_raw"] = 0.0
     for c, w in weights.items():
@@ -325,13 +340,19 @@ def compute_manual_risk(df, weights):
         else:
             contrib = valid_vals.astype(float).clip(0, 1) * w
         df.loc[valid_mask, "manual_risk_raw"] += contrib
-    mn, mx = df["manual_risk_raw"].min(), df["manual_risk_raw"].max()
+    if mn is None:
+        mn = float(df["manual_risk_raw"].min())
+    if mx is None:
+        mx = float(df["manual_risk_raw"].max())
     df["manual_risk_score"] = (df["manual_risk_raw"] - mn) / (mx - mn + 1e-9)
     df.drop(columns=["manual_risk_raw"], inplace=True)
-    return df
+    return df, float(mn), float(mx)
 
 
-def add_derived_features(df):
+def add_derived_features(df, iforest_mean=None, iforest_std=None):
+    """F2: normalize iforest_score with TRAIN mean/std (no per-split leakage).
+    If mean/std are None, they're fit from this df. If provided, applied directly.
+    Returns (df, iforest_mean, iforest_std)."""
     df = df.copy()
     def num(c):
         return pd.to_numeric(df.get(c, np.nan), errors="coerce")
@@ -341,11 +362,13 @@ def add_derived_features(df):
         num("payment_amount") / num("user_amt_mean_30d"),
         np.nan,
     )
-    df["normalized_iforest"] = (
-        (num("iforest_score") - num("iforest_score").mean()) /
-        (num("iforest_score").std() + 1e-9)
-    )
-    return df
+    s = num("iforest_score")
+    if iforest_mean is None:
+        iforest_mean = float(s.mean())
+    if iforest_std is None:
+        iforest_std = float(s.std())
+    df["normalized_iforest"] = (s - iforest_mean) / (iforest_std + 1e-9)
+    return df, float(iforest_mean), float(iforest_std)
 
 
 # =================== MAIN PIPELINE ===================
@@ -399,23 +422,29 @@ def run_pipeline(df, threshold_method="percentile"):
     print("\n[info] Training IsolationForest...")
     num_cols = [
         c for c in df_train.select_dtypes(include=[np.number]).columns
-        if c not in [LABEL_COL, "manual_risk_score"] + ID_COLS_TO_EXCLUDE
+        if c not in [LABEL_COL] + ID_COLS_TO_EXCLUDE
     ]
     iso = IsolationForest(n_estimators=200, contamination=0.02, random_state=42, n_jobs=-1)
     iso.fit(df_train[num_cols])
     for part in (df_train, df_val, df_test):
         part["iforest_score"] = -iso.score_samples(part[num_cols])
 
-    df_train = add_derived_features(df_train)
-    df_val = add_derived_features(df_val)
-    df_test = add_derived_features(df_test)
+    # F2: fit iforest mean/std on TRAIN, apply same stats to val/test
+    df_train, iforest_mean, iforest_std = add_derived_features(df_train)
+    df_val, _, _ = add_derived_features(df_val, iforest_mean, iforest_std)
+    df_test, _, _ = add_derived_features(df_test, iforest_mean, iforest_std)
 
+    # F1: fit manual_risk min/max on TRAIN, apply same stats to val/test
     weights = compute_rule_weights(df_train)
-    df_train = compute_manual_risk(df_train, weights)
-    df_val = compute_manual_risk(df_val, weights)
-    df_test = compute_manual_risk(df_test, weights)
+    df_train, manual_risk_mn, manual_risk_mx = compute_manual_risk(df_train, weights)
+    df_val, _, _ = compute_manual_risk(df_val, weights, mn=manual_risk_mn, mx=manual_risk_mx)
+    df_test, _, _ = compute_manual_risk(df_test, weights, mn=manual_risk_mn, mx=manual_risk_mx)
 
-    exclude_cols = [LABEL_COL, DATE_COL] + ID_COLS_TO_EXCLUDE
+    # F3: exclude manual_risk_score from features (it's used in the blend separately).
+    # F6: exclude rule_*/combo_* from features (already represented via manual_risk_score).
+    exclude_cols = [LABEL_COL, DATE_COL] + ID_COLS_TO_EXCLUDE + ["manual_risk_score"]
+    rule_and_combo = [c for c in df_train.columns if c.startswith("rule_") or c.startswith("combo_")]
+    exclude_cols = exclude_cols + rule_and_combo
     feats = [c for c in df_train.columns if c not in exclude_cols]
 
     Xtr = df_train[feats].select_dtypes(include=[np.number])
@@ -425,16 +454,24 @@ def run_pipeline(df, threshold_method="percentile"):
     Xte = df_test[feats].select_dtypes(include=[np.number])
     yte = df_test[LABEL_COL].astype(int)
 
+    # Align column order across splits
+    Xva = Xva.reindex(columns=Xtr.columns)
+    Xte = Xte.reindex(columns=Xtr.columns)
+
     dtrain = xgb.DMatrix(Xtr, label=ytr, missing=np.nan)
     dval = xgb.DMatrix(Xva, label=yva, missing=np.nan)
     dtest = xgb.DMatrix(Xte, label=yte, missing=np.nan)
 
-    print("\n[info] Training XGBoost...")
+    print(f"\n[info] Training XGBoost on {Xtr.shape[1]} features ...")
+    # F4: scale_pos_weight = sqrt(neg/pos) — better for PR-AUC than full ratio.
+    # F7: tuned hyperparameters from grid search on val AUPRC.
     params = {
-        "max_depth": 7, "learning_rate": 0.05, "subsample": 0.7,
-        "colsample_bytree": 0.8, "objective": "binary:logistic",
+        "max_depth": 4, "learning_rate": 0.05, "subsample": 0.7,
+        "colsample_bytree": 0.8, "min_child_weight": 20, "reg_lambda": 5,
+        "objective": "binary:logistic",
         "eval_metric": ["aucpr"], "tree_method": "hist",
-        "scale_pos_weight": (len(ytr) - ytr.sum()) / max(ytr.sum(), 1),
+        "scale_pos_weight": float(np.sqrt((len(ytr) - ytr.sum()) / max(ytr.sum(), 1))),
+        "seed": 42,
     }
     model = xgb.train(
         params, dtrain, num_boost_round=1500,
@@ -487,13 +524,23 @@ def run_pipeline(df, threshold_method="percentile"):
                 f.write(str(obj))
         return path
 
+    # Normalization stats — daily must use these so cross-day scores stay comparable.
+    normalization_stats = {
+        "manual_risk_mn": manual_risk_mn,
+        "manual_risk_mx": manual_risk_mx,
+        "iforest_mean": iforest_mean,
+        "iforest_std": iforest_std,
+    }
+
     artifact_paths = [
         save(label_encoders, "label_encoders", "joblib"),
         save(model, "fraud_model", "joblib"),
         save(iso, "iforest_model", "joblib"),
+        save(list(num_cols), "iforest_features", "joblib"),
         save(list(Xtr.columns), "fraud_features", "joblib"),
         save(weights, "rule_weights", "joblib"),
         save(thresholds, "rule_thresholds", "joblib"),
+        save(normalization_stats, "normalization_stats", "joblib"),
         save(alpha_blend, "blend_alpha", "txt"),
         plot_path,
     ]

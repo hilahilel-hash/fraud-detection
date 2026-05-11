@@ -1,8 +1,21 @@
 # -*- coding: utf-8 -*-
 """
-Fiverr Fraud Detection - Daily Scoring Pipeline (v11.1)
+Fiverr Fraud Detection - Daily Scoring Pipeline (v12.0)
 Runs every day at 11:00 Israel time via GitHub Actions.
 Downloads artifacts from Google Drive, scores yesterday's data, uploads Excel result.
+
+v12 changes vs v11.1 (bug fixes only — keeps the structure / Excel format identical):
+  D1. compute_manual_risk uses TRAIN min/max from weekly's normalization_stats.joblib
+      (was per-day; broke cross-day comparability and the 0.6/0.8 thresholds drifted).
+  D2. normalized_iforest uses TRAIN mean/std from the same artifact
+      (was per-day; same issue).
+  D4. merge_rule_weights no longer recomputes lift on live data
+      (labels are ~all-zero on live data; lift came out ~0; weights got halved).
+      Critical rules now use their configured base weights as-is.
+  Plus: iforest feature reindex now casts to numeric so bool rule columns survive
+        sklearn's feature-name check.
+
+Backward compatible — falls back to per-day normalization if the weekly artifact is missing.
 """
 
 import warnings
@@ -168,24 +181,29 @@ def build_rule_columns(df, thresholds):
     return df
 
 
-def merge_rule_weights(weekly_weights, critical_rules, df):
+def merge_rule_weights(weekly_weights, critical_rules, df=None):
+    """D4: critical rule weights are STATIC.
+
+    The old version tried to recompute lift on live data, but daily labels are
+    essentially all-zero (chargebacks need ~30+ days to mature), so the computed
+    lift was ~0 and weights got clipped to base_w * 0.5 — critical rules ended
+    up under-weighted by half. Now we simply use the configured base weights.
+    The `df` parameter is kept for backward compatibility but ignored.
+    """
     merged = weekly_weights.copy()
-    global_rate = max(df[LABEL_COL].mean() if LABEL_COL in df.columns else 0.01, 1e-6)
     for rule, base_w in critical_rules.items():
-        if rule in df.columns:
-            col = df[rule]
-            mask = col.astype(bool) if col.dropna().isin([0, 1, True, False]).all() else (col > 0)
-            lift = (
-                df.loc[mask, LABEL_COL].mean() / global_rate
-                if LABEL_COL in df.columns and mask.sum() > 0 else 1.5
-            )
-            merged[rule] = np.clip((lift ** 1.5) * base_w, base_w * 0.5, base_w * 2.5)
-        else:
-            merged[rule] = base_w
+        merged[rule] = base_w
     return merged
 
 
-def compute_manual_risk(df, weights):
+def compute_manual_risk(df, weights, mn=None, mx=None):
+    """D1: normalize with TRAIN min/max if provided, else fall back to per-day.
+
+    Cross-day score consistency requires the same mn/mx every day; otherwise
+    a score of 0.8 on Monday and 0.8 on Tuesday mean different things and the
+    CRITICAL/HIGH thresholds drift. The weekly trainer now saves these stats
+    in normalization_stats.joblib; pass them in here.
+    """
     df = df.copy()
     df["manual_risk_raw"] = 0.0
     for c, w in weights.items():
@@ -206,11 +224,14 @@ def compute_manual_risk(df, weights):
         else:
             contrib = valid_vals.astype(float).clip(0, 1) * w
         df.loc[valid_mask, "manual_risk_raw"] += contrib
-    mn, mx = df["manual_risk_raw"].min(), df["manual_risk_raw"].max()
-    df["manual_risk_score"] = (
-        (df["manual_risk_raw"] - mn) / (mx - mn + 1e-9)
-        if mx != mn else 0.0
-    )
+    if mn is None:
+        mn = df["manual_risk_raw"].min()
+    if mx is None:
+        mx = df["manual_risk_raw"].max()
+    if mx != mn:
+        df["manual_risk_score"] = ((df["manual_risk_raw"] - mn) / (mx - mn + 1e-9)).clip(0, 1)
+    else:
+        df["manual_risk_score"] = 0.0
     df.drop(columns=["manual_risk_raw"], inplace=True)
     return df
 
@@ -363,7 +384,7 @@ def generate_email_html(df, date_str):
 
     <p style="margin-top:20px;color:#7f8c8d;font-size:12px">
       Full Excel report saved to Google Drive → "Daily fraud" folder.<br>
-      Powered by Fiverr Fraud Detection Pipeline v11.1
+      Powered by Fiverr Fraud Detection Pipeline v12.0
     </p>
     </body></html>
     """
@@ -378,7 +399,7 @@ def generate_email_html(df, date_str):
 # =================== MAIN DAILY PIPELINE ===================
 def run_daily_pipeline(df):
     print("=" * 80)
-    print("   Fiverr Fraud Detection - Daily Scoring (v11.1)")
+    print("   Fiverr Fraud Detection - Daily Scoring (v12.0)")
     print("=" * 80)
 
     model = joblib.load(os.path.join(LOCAL_ARTIFACT_DIR, "fraud_model.joblib"))
@@ -392,25 +413,59 @@ def run_daily_pipeline(df):
     except Exception:
         base_alpha = 0.5
 
+    # D1, D2: load TRAIN-fit normalization stats from weekly. Falls back to
+    # per-day stats if the artifact isn't present (e.g., the weekly hasn't
+    # been retrained yet with v12 — keeps backward compatibility for one cycle).
+    try:
+        norm_stats = joblib.load(os.path.join(LOCAL_ARTIFACT_DIR, "normalization_stats.joblib"))
+        manual_risk_mn = norm_stats.get("manual_risk_mn")
+        manual_risk_mx = norm_stats.get("manual_risk_mx")
+        iforest_mean = norm_stats.get("iforest_mean")
+        iforest_std = norm_stats.get("iforest_std")
+        print(f"[info] Loaded normalization stats from weekly: "
+              f"manual_risk[{manual_risk_mn:.3f}, {manual_risk_mx:.3f}], "
+              f"iforest mean={iforest_mean:.4f}, std={iforest_std:.4f}")
+    except FileNotFoundError:
+        manual_risk_mn = manual_risk_mx = iforest_mean = iforest_std = None
+        print("[warn] normalization_stats.joblib not found — falling back to per-day "
+              "normalization (run a v12 weekly to fix).")
+
     df = ensure_datetime(df)
     df = safe_fillna(df)
     df = encode_categoricals(df, encoders, CAT_COLS)
     df = build_rule_columns(df, thresholds)
-    merged_weights = merge_rule_weights(weights, CRITICAL_RULE_WEIGHTS, df)
-    df = compute_manual_risk(df, merged_weights)
+    # D4: merge_rule_weights now uses static critical weights — no live-data lift estimation.
+    merged_weights = merge_rule_weights(weights, CRITICAL_RULE_WEIGHTS)
+    # D1: normalize with weekly TRAIN min/max for cross-day consistency.
+    df = compute_manual_risk(df, merged_weights, mn=manual_risk_mn, mx=manual_risk_mx)
 
     try:
-        iso_feats = [
-            f for f in features
-            if f not in ["manual_risk_score", "normalized_iforest", LABEL_COL, DATE_COL]
-        ]
-        df_iso = df.reindex(columns=iso_feats, fill_value=0).select_dtypes(include=np.number)
-        df["iforest_score"] = -iso.score_samples(df_iso)
-        df["normalized_iforest"] = (
-            (df["iforest_score"] - df["iforest_score"].mean()) /
-            (df["iforest_score"].std() + 1e-9)
+        # Prefer the column list iso was actually trained on (saved by v12 weekly).
+        # Fall back to the XGB feature list for backward compatibility.
+        try:
+            iso_feats = joblib.load(os.path.join(LOCAL_ARTIFACT_DIR, "iforest_features.joblib"))
+        except FileNotFoundError:
+            iso_feats = [
+                f for f in features
+                if f not in ["manual_risk_score", "normalized_iforest", LABEL_COL, DATE_COL]
+            ]
+        # Cast to numeric so bool rule columns aren't dropped by select_dtypes.
+        df_iso = (
+            df.reindex(columns=iso_feats, fill_value=0)
+            .apply(pd.to_numeric, errors="coerce")
+            .fillna(0)
         )
-    except Exception:
+        df["iforest_score"] = -iso.score_samples(df_iso)
+        # D2: normalize with weekly TRAIN mean/std for cross-day consistency.
+        if iforest_mean is not None and iforest_std is not None:
+            df["normalized_iforest"] = (df["iforest_score"] - iforest_mean) / (iforest_std + 1e-9)
+        else:
+            df["normalized_iforest"] = (
+                (df["iforest_score"] - df["iforest_score"].mean()) /
+                (df["iforest_score"].std() + 1e-9)
+            )
+    except Exception as e:
+        print(f"[warn] iforest scoring failed: {e}")
         df["normalized_iforest"] = 0
 
     dmatrix = xgb.DMatrix(df.reindex(columns=features), missing=np.nan)
