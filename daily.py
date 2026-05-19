@@ -178,6 +178,28 @@ def build_rule_columns(df, thresholds):
         (num("user_txns_30d") > thresholds.get("user_txns_30d_high", 5))
     )
 
+    # ====== ANTI-RULES (v2): protective signals — REDUCE the risk score ======
+    # Must match weekly_v2.build_rule_columns exactly so the negative weights
+    # loaded from rule_weights.joblib actually apply at scoring time.
+    df["anti_rule_mature_seller"] = (
+        df.get("seller_level", pd.Series(dtype=str)).astype(str).isin(
+            ["SELLER_LEVEL_ONE", "SELLER_LEVEL_TWO"]
+        )
+        & (num("total_orders_seller") > 20)
+        & (num("seller_fraud_30d") == 0)
+        & (num("seller_fraud_14d") == 0)
+    )
+
+    df["anti_rule_mature_buyer"] = (
+        (num("total_orders_buyer") > 50)
+        & (num("days_since_signup") > 180)
+    )
+
+    df["anti_rule_high_volume_clean_seller"] = (
+        (num("total_orders_seller") > 100)
+        & (num("seller_fraud_30d") == 0)
+    )
+
     return df
 
 

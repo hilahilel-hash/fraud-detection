@@ -289,11 +289,35 @@ def build_rule_columns(df, thresholds=None):
         (num("total_orders_seller") <= thresholds["total_orders_seller_low"])
     ).astype(int)
 
+    # ====== ANTI-RULES (v2): protective signals that REDUCE risk score ======
+    # Why: in Top-10 tracking, established sellers/buyers with many clones
+    # kept getting flagged as FP. These rules tell the model "trust this account".
+    df["anti_rule_mature_seller"] = (
+        df.get("seller_level", pd.Series(dtype=str)).astype(str).isin(
+            ["SELLER_LEVEL_ONE", "SELLER_LEVEL_TWO"]
+        )
+        & (num("total_orders_seller") > 20)
+        & (num("seller_fraud_30d") == 0)
+        & (num("seller_fraud_14d") == 0)
+    )
+
+    df["anti_rule_mature_buyer"] = (
+        (num("total_orders_buyer") > 50)
+        & (num("days_since_signup") > 180)
+    )
+
+    df["anti_rule_high_volume_clean_seller"] = (
+        (num("total_orders_seller") > 100)
+        & (num("seller_fraud_30d") == 0)
+    )
+
     return df
 
 
 def compute_rule_weights(df_train):
-    rule_cols = [c for c in df_train.columns if c.startswith("rule_")]
+    # v2: also computes negative weights for anti_rule_* columns.
+    rule_cols = [c for c in df_train.columns
+                 if c.startswith("rule_") or c.startswith("anti_rule_")]
     global_rate = max(df_train[LABEL_COL].mean(), 1e-9)
     weights = {}
     for c in rule_cols:
@@ -309,13 +333,27 @@ def compute_rule_weights(df_train):
         else:
             lift = df_train.loc[valid_mask].loc[mask, LABEL_COL].mean() / global_rate
             corr = abs(np.corrcoef(col_non_na.astype(float), df_train.loc[valid_mask, LABEL_COL])[0, 1])
-        w = np.clip((lift ** 1.5) * (1 + 3 * corr), 0.5, 25)
-        weights[c] = float(w)
+
+        if c.startswith("anti_rule_"):
+            # Anti-rule: low lift = strong protection. Convert to negative weight.
+            # lift >= 1 => not really an anti-signal => w = 0
+            # lift ~ 0 => fires only on safe txns => strong negative w
+            if lift >= 1.0:
+                w = 0.0
+            else:
+                anti_lift = 1.0 / max(lift, 0.05)
+                w = -float(np.clip((anti_lift ** 0.5) * (1 + 3 * corr), 0.5, 10))
+        else:
+            w = float(np.clip((lift ** 1.5) * (1 + 3 * corr), 0.5, 25))
+        weights[c] = w
     return weights
 
 
 def compute_manual_risk(df, weights, mn=None, mx=None):
     """Compute manual_risk_score for df using `weights`.
+
+    v2: weights for anti_rule_* are negative (already computed in compute_rule_weights),
+        and contribute as subtraction from manual_risk_raw. Normalization still maps [0,1].
 
     F1: If mn/mx are None, they're fit from this df (use on TRAIN).
         If provided, they're applied directly (use on VAL/TEST, daily scoring).
@@ -331,6 +369,7 @@ def compute_manual_risk(df, weights, mn=None, mx=None):
             continue
         valid_mask = col.notna()
         valid_vals = col[valid_mask]
+        # Sign of `w` already encodes positive/negative (anti_rule_* has w<0)
         if pd.api.types.is_bool_dtype(valid_vals):
             contrib = valid_vals.astype(bool).astype(int) * w
         elif valid_vals.dropna().isin([0, 1, True, False]).all():
@@ -441,9 +480,10 @@ def run_pipeline(df, threshold_method="percentile"):
     df_test, _, _ = compute_manual_risk(df_test, weights, mn=manual_risk_mn, mx=manual_risk_mx)
 
     # F3: exclude manual_risk_score from features (it's used in the blend separately).
-    # F6: exclude rule_*/combo_* from features (already represented via manual_risk_score).
+    # F6: exclude rule_*/combo_*/anti_rule_* from features (already in manual_risk_score).
     exclude_cols = [LABEL_COL, DATE_COL] + ID_COLS_TO_EXCLUDE + ["manual_risk_score"]
-    rule_and_combo = [c for c in df_train.columns if c.startswith("rule_") or c.startswith("combo_")]
+    rule_and_combo = [c for c in df_train.columns
+                      if c.startswith("rule_") or c.startswith("combo_") or c.startswith("anti_rule_")]
     exclude_cols = exclude_cols + rule_and_combo
     feats = [c for c in df_train.columns if c not in exclude_cols]
 
