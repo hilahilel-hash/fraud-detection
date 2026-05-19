@@ -19,6 +19,12 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          # Manual trigger always runs (don't skip even if already succeeded today)
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "should_run=true" >> $GITHUB_OUTPUT
+            echo "Manual trigger — running unconditionally."
+            exit 0
+          fi
           HOUR=$(date -u +%H)
           # At 08:00 UTC (first attempt) — always run
           if [ "$HOUR" -lt "10" ]; then
