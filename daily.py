@@ -153,13 +153,14 @@ def build_rule_columns(df, thresholds):
     if "days_since_signup" in df.columns:
         df["rule_new_user_60d"] = (num("days_since_signup") < 60)
 
+    # v3: replaced user_txns_30d (inaccurate in source) with user_txns_24h (accurate).
     df["combo_high_volume"] = (
         (num("payment_amount") > thresholds.get("payment_amount_high", 500)) &
-        (num("user_txns_30d") > thresholds.get("user_txns_30d_high", 5))
+        (num("user_txns_24h") > thresholds.get("user_txns_24h", 2))
     ).astype(int)
     df["combo_new_user_high_volume"] = (
         (df["rule_is_new_user_7d"] == True) &
-        (num("user_txns_30d") > thresholds.get("user_txns_30d_high", 5))
+        (num("user_txns_24h") > thresholds.get("user_txns_24h", 2))
     ).astype(int)
     df["combo_repeat_pair_high_value"] = (
         (num("total_orders_buyer_seller") >= 3) &
@@ -175,7 +176,7 @@ def build_rule_columns(df, thresholds):
     df["rule_new_user_high_volume"] = df["combo_new_user_high_volume"].astype(bool)
     df["rule_massage_activity_all"] = (
         (df["rule_is_new_user_7d"] == 1) &
-        (num("user_txns_30d") > thresholds.get("user_txns_30d_high", 5))
+        (num("user_txns_24h") > thresholds.get("user_txns_24h", 2))
     )
 
     # ====== ANTI-RULES (v2): protective signals — REDUCE the risk score ======
@@ -489,6 +490,18 @@ def run_daily_pipeline(df):
     except Exception as e:
         print(f"[warn] iforest scoring failed: {e}")
         df["normalized_iforest"] = 0
+
+    # v3: derive the features XGBoost was trained with (previously missing in daily!).
+    # Without this, txn_rate_signup and amt_ratio_to_mean were always NaN/0
+    # at scoring time even though they were live during training.
+    def _num(c):
+        return pd.to_numeric(df.get(c, np.nan), errors="coerce")
+    df["txn_rate_signup"] = _num("user_txns_total") / (_num("days_since_signup") + 1)
+    df["amt_ratio_to_mean"] = np.where(
+        pd.notna(_num("user_amt_mean_30d")) & (_num("user_amt_mean_30d") > 0),
+        _num("payment_amount") / _num("user_amt_mean_30d"),
+        np.nan,
+    )
 
     dmatrix = xgb.DMatrix(df.reindex(columns=features), missing=np.nan)
     df["fraud_score_raw"] = model.predict(dmatrix)

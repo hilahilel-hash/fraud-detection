@@ -69,6 +69,11 @@ HIGH_RISK_COUNTRIES = [
 ID_COLS_TO_EXCLUDE = [
     "token", "user_id", "seller_id", "gig_id", "order_id",
     "email", "ip", "payer_provider_payer_id",
+    # v3: user_txns_30d is inaccurate in source data (dm_paypal_fraud_daily).
+    # Excluded from XGBoost features. Rules that depended on it now use
+    # user_txns_24h instead (verified accurate). Same for txn_rate_signup
+    # which is now computed from user_txns_total / days_since_signup.
+    "user_txns_30d",
 ]
 
 # =================== QUERY ===================
@@ -164,17 +169,17 @@ def calculate_adaptive_thresholds(df_train, target_col=LABEL_COL, method="percen
                 valid_ratios.quantile(0.95) if not valid_ratios.empty else 5
             )
 
-        # Combo rarity
+        # Combo rarity (v3: use user_txns_24h, the accurate source field)
         df_train["combo_high_volume"] = (
             (df_train["payment_amount"] > thresholds["payment_amount_high"]) &
-            (df_train["user_txns_30d"] > thresholds["user_txns_30d_high"])
+            (df_train["user_txns_24h"] > thresholds["user_txns_24h"])
         )
         thresholds["combo_high_volume_rate"] = df_train["combo_high_volume"].mean()
 
         if "is_new_user_7d" in df_train.columns:
             df_train["combo_new_user_high_volume"] = (
                 (df_train["is_new_user_7d"] == 1) &
-                (df_train["user_txns_30d"] > thresholds["user_txns_30d_high"])
+                (df_train["user_txns_24h"] > thresholds["user_txns_24h"])
             )
             thresholds["combo_new_user_high_volume_rate"] = df_train["combo_new_user_high_volume"].mean()
         else:
@@ -260,9 +265,10 @@ def build_rule_columns(df, thresholds=None):
     df["rule_buyer_count_clone"] = (num("buyer_count_clone") > thresholds["buyer_count_clone"])
     df["rule_is_fake_location"] = (df["is_fake_location"] == True) if "is_fake_location" in df.columns else False
 
+    # v3: rules that used user_txns_30d now use user_txns_24h (accurate in source).
     df["rule_high_volume"] = (
         (num("payment_amount") > thresholds["payment_amount_high"]) &
-        (num("user_txns_30d") > thresholds["user_txns_30d_high"])
+        (num("user_txns_24h") > thresholds["user_txns_24h"])
     ).astype(int)
     df["rule_high_volume_score"] = np.where(
         df["rule_high_volume"], 1 - thresholds.get("combo_high_volume_rate", 0.01), 0
@@ -273,11 +279,11 @@ def build_rule_columns(df, thresholds=None):
 
     df["combo_high_volume"] = (
         (num("payment_amount") > thresholds["payment_amount_high"]) &
-        (num("user_txns_30d") > thresholds["user_txns_30d_high"])
+        (num("user_txns_24h") > thresholds["user_txns_24h"])
     ).astype(int)
     df["combo_new_user_high_volume"] = (
         (df["rule_is_new_user_7d"] == True) &
-        (num("user_txns_30d") > thresholds["user_txns_30d_high"])
+        (num("user_txns_24h") > thresholds["user_txns_24h"])
     ).astype(int)
     df["combo_repeat_pair_high_value"] = (
         (num("total_orders_buyer_seller") >= 3) &
@@ -395,7 +401,8 @@ def add_derived_features(df, iforest_mean=None, iforest_std=None):
     df = df.copy()
     def num(c):
         return pd.to_numeric(df.get(c, np.nan), errors="coerce")
-    df["txn_rate_signup"] = num("user_txns_30d") / (num("days_since_signup") + 1)
+    # v3: use user_txns_total (accurate) instead of user_txns_30d (inaccurate in source).
+    df["txn_rate_signup"] = num("user_txns_total") / (num("days_since_signup") + 1)
     df["amt_ratio_to_mean"] = np.where(
         pd.notna(num("user_amt_mean_30d")) & (num("user_amt_mean_30d") > 0),
         num("payment_amount") / num("user_amt_mean_30d"),
