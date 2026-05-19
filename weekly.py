@@ -317,6 +317,15 @@ def build_rule_columns(df, thresholds=None):
         & (num("seller_fraud_30d") == 0)
     )
 
+    # v4: team accounts with many orders are legitimate (they're companies/agencies).
+    # Without this, mature is_team=1 buyers with high buyer_count_clone kept hitting Top-10.
+    df["anti_rule_established_team"] = (
+        (num("is_team") == 1)
+        & (num("total_orders_buyer") > 50)
+        & (num("days_since_signup") > 90)
+        & (num("seller_fraud_30d") == 0)
+    )
+
     return df
 
 

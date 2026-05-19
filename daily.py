@@ -201,6 +201,15 @@ def build_rule_columns(df, thresholds):
         & (num("seller_fraud_30d") == 0)
     )
 
+    # v4: team accounts with many orders are legitimate (companies/agencies).
+    # Must match weekly.build_rule_columns exactly.
+    df["anti_rule_established_team"] = (
+        (num("is_team") == 1)
+        & (num("total_orders_buyer") > 50)
+        & (num("days_since_signup") > 90)
+        & (num("seller_fraud_30d") == 0)
+    )
+
     return df
 
 
