@@ -307,10 +307,18 @@ def build_rule_columns(df, thresholds=None):
         & (num("seller_fraud_14d") == 0)
     )
 
+    # v5: don't protect a mature buyer when there's an amount spike (potential ATO).
+    # amt_ratio = payment / 30d-avg. If ratio >= 3, the buyer is paying way more
+    # than usual — could be account takeover, so withhold the anti-rule protection.
+    _amt_ratio = num("payment_amount") / num("user_amt_mean_30d").replace(0, np.nan)
     df["anti_rule_mature_buyer"] = (
         (num("total_orders_buyer") > 50)
         & (num("days_since_signup") > 180)
+        & ((_amt_ratio < 3) | _amt_ratio.isna())
     )
+
+    # v5: positive rule for ATO-style amount spikes (current payment >> avg).
+    df["rule_amount_spike"] = (_amt_ratio >= 5).fillna(False)
 
     df["anti_rule_high_volume_clean_seller"] = (
         (num("total_orders_seller") > 100)
