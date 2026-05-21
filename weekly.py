@@ -74,6 +74,16 @@ ID_COLS_TO_EXCLUDE = [
     # user_txns_24h instead (verified accurate). Same for txn_rate_signup
     # which is now computed from user_txns_total / days_since_signup.
     "user_txns_30d",
+    # v7: these columns exist in dm_paypal_fraud_weekly but NOT in
+    # dm_paypal_fraud_daily, so the model would train on features that are
+    # missing at scoring time. Excluding so weekly only learns from features
+    # daily can actually provide.
+    "avg_payment_amount_14d",
+    "buyer_country",
+    "os_diversity_24h",
+    "reused_same_paypal_payer_id_30d",
+    "seller_txns_14d",
+    "user_txns_1y",
 ]
 
 # =================== QUERY ===================
