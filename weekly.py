@@ -443,6 +443,14 @@ def run_pipeline(df, threshold_method="percentile"):
     df = ensure_datetime(df)
     df = safe_fillna(df)
 
+    # v6: exclude Fiverr employees — they should never be scored as fraud.
+    if "is_fiverr_employee" in df.columns:
+        before = len(df)
+        df = df[df["is_fiverr_employee"] != True].copy()
+        dropped = before - len(df)
+        if dropped:
+            print(f"[info] Dropped {dropped} rows where is_fiverr_employee=TRUE")
+
     IGNORE_RECENT_DAYS = 40
     max_ts = df[DATE_COL].max()
     cutoff = max_ts - pd.Timedelta(days=IGNORE_RECENT_DAYS)

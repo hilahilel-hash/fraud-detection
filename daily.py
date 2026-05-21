@@ -471,6 +471,15 @@ def run_daily_pipeline(df):
 
     df = ensure_datetime(df)
     df = safe_fillna(df)
+
+    # v6: exclude Fiverr employees — never score them as fraud.
+    if "is_fiverr_employee" in df.columns:
+        before = len(df)
+        df = df[df["is_fiverr_employee"] != True].copy()
+        dropped = before - len(df)
+        if dropped:
+            print(f"[info] Dropped {dropped} rows where is_fiverr_employee=TRUE")
+
     df = encode_categoricals(df, encoders, CAT_COLS)
     df = build_rule_columns(df, thresholds)
     # D4: merge_rule_weights now uses static critical weights — no live-data lift estimation.
