@@ -83,8 +83,8 @@ jobs:
           GCP_CREDENTIALS: ${{ secrets.GCP_CREDENTIALS }}
         run: python daily.py
 
-      - name: Send email notification
-        if: always()
+      - name: Send SUCCESS email (all recipients)
+        if: success()
         uses: dawidd6/action-send-mail@v3
         with:
           server_address: smtp.gmail.com
@@ -92,11 +92,26 @@ jobs:
           secure: true
           username: ${{ secrets.GMAIL_USER }}
           password: ${{ secrets.GMAIL_APP_PASSWORD }}
-          subject: "${{ job.status == 'success' && '✅' || '❌' }} Fraud Detection Daily Report — ${{ env.RUN_DATE }}"
-          to: hila.hilel@fiverr.com, gabriella.sacerdote@fiverr.com
+          subject: "✅ Fraud Detection Daily Report — ${{ env.RUN_DATE }}"
+          to: hila.hilel@fiverr.com, gabriella.sacerdote@fiverr.com, yuval.leizer@fiverr.com
           from: "Fraud Detection Bot <${{ secrets.GMAIL_USER }}>"
           html_body: file:///tmp/email_summary.html
           attachments: /tmp/risky_transactions_explained_*.xlsx
+          ignore_cert: false
+
+      - name: Send FAILURE email (Hila only)
+        if: failure()
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: smtp.gmail.com
+          server_port: 465
+          secure: true
+          username: ${{ secrets.GMAIL_USER }}
+          password: ${{ secrets.GMAIL_APP_PASSWORD }}
+          subject: "❌ Fraud Detection Daily Report — ${{ env.RUN_DATE }} (FAILED)"
+          to: hila.hilel@fiverr.com
+          from: "Fraud Detection Bot <${{ secrets.GMAIL_USER }}>"
+          body: "Daily fraud scoring pipeline FAILED. Check GitHub Actions logs."
           ignore_cert: false
 
       - name: Upload Excel as artifact

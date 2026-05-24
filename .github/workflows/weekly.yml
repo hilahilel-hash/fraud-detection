@@ -79,8 +79,8 @@ jobs:
           path: /tmp/fraud_artifacts/
           retention-days: 90
 
-      - name: Send email notification
-        if: always()
+      - name: Send SUCCESS email (all recipients)
+        if: success()
         uses: dawidd6/action-send-mail@v3
         with:
           server_address: smtp.gmail.com
@@ -88,8 +88,23 @@ jobs:
           secure: true
           username: ${{ secrets.GMAIL_USER }}
           password: ${{ secrets.GMAIL_APP_PASSWORD }}
-          subject: "${{ job.status == 'success' && '✅' || '❌' }} Weekly Fraud Training — ${{ job.status }}"
-          to: hila.hilel@fiverr.com, gabriella.sacerdote@fiverr.com
+          subject: "✅ Weekly Fraud Training — success"
+          to: hila.hilel@fiverr.com, gabriella.sacerdote@fiverr.com, yuval.leizer@fiverr.com
           from: "Fraud Detection Bot <${{ secrets.GMAIL_USER }}>"
-          body: "Weekly fraud training pipeline finished with status: ${{ job.status }}"
+          body: "Weekly fraud training pipeline finished successfully."
+          ignore_cert: false
+
+      - name: Send FAILURE email (Hila only)
+        if: failure()
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: smtp.gmail.com
+          server_port: 465
+          secure: true
+          username: ${{ secrets.GMAIL_USER }}
+          password: ${{ secrets.GMAIL_APP_PASSWORD }}
+          subject: "❌ Weekly Fraud Training — failure"
+          to: hila.hilel@fiverr.com
+          from: "Fraud Detection Bot <${{ secrets.GMAIL_USER }}>"
+          body: "Weekly fraud training pipeline FAILED. Check GitHub Actions logs."
           ignore_cert: false
