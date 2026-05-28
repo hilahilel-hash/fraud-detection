@@ -192,10 +192,12 @@ def build_rule_columns(df, thresholds):
     )
 
     # v5: don't protect a mature buyer when there's an amount spike (potential ATO).
+    # v8: restrict to is_team=0 (teams handled separately by anti_rule_established_team).
     # Must match weekly.build_rule_columns exactly.
     _amt_ratio = num("payment_amount") / num("user_amt_mean_30d").replace(0, np.nan)
     df["anti_rule_mature_buyer"] = (
-        (num("total_orders_buyer") > 50)
+        (num("is_team") == 0)
+        & (num("total_orders_buyer") > 50)
         & (num("days_since_signup") > 180)
         & ((_amt_ratio < 3) | _amt_ratio.isna())
     )
@@ -209,11 +211,12 @@ def build_rule_columns(df, thresholds):
     )
 
     # v4: team accounts with many orders are legitimate (companies/agencies).
+    # v8: tightened to 730 days (2 years). Teams with <2 years had lift=1.0.
     # Must match weekly.build_rule_columns exactly.
     df["anti_rule_established_team"] = (
         (num("is_team") == 1)
         & (num("total_orders_buyer") > 50)
-        & (num("days_since_signup") > 90)
+        & (num("days_since_signup") > 730)
         & (num("seller_fraud_30d") == 0)
     )
 

@@ -320,9 +320,12 @@ def build_rule_columns(df, thresholds=None):
     # v5: don't protect a mature buyer when there's an amount spike (potential ATO).
     # amt_ratio = payment / 30d-avg. If ratio >= 3, the buyer is paying way more
     # than usual — could be account takeover, so withhold the anti-rule protection.
+    # v8: restrict to is_team=0 (non-team). Team buyers need 2 years before
+    # they're protective — handled separately by anti_rule_established_team.
     _amt_ratio = num("payment_amount") / num("user_amt_mean_30d").replace(0, np.nan)
     df["anti_rule_mature_buyer"] = (
-        (num("total_orders_buyer") > 50)
+        (num("is_team") == 0)
+        & (num("total_orders_buyer") > 50)
         & (num("days_since_signup") > 180)
         & ((_amt_ratio < 3) | _amt_ratio.isna())
     )
@@ -336,11 +339,12 @@ def build_rule_columns(df, thresholds=None):
     )
 
     # v4: team accounts with many orders are legitimate (they're companies/agencies).
-    # Without this, mature is_team=1 buyers with high buyer_count_clone kept hitting Top-10.
+    # v8: tightened to 730 days. Data shows teams with <2 years history have
+    # LIFT = 1.0 (no protection earned). Only after 2 years do they reach lift 0.13.
     df["anti_rule_established_team"] = (
         (num("is_team") == 1)
         & (num("total_orders_buyer") > 50)
-        & (num("days_since_signup") > 90)
+        & (num("days_since_signup") > 730)
         & (num("seller_fraud_30d") == 0)
     )
 
