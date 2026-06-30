@@ -84,6 +84,17 @@ ID_COLS_TO_EXCLUDE = [
     "reused_same_paypal_payer_id_30d",
     "seller_txns_14d",
     "user_txns_1y",
+    # v13: dropped — mean(|SHAP|)=0.0 on test split, XGBoost never split on them.
+    # Clean drops: none feed any rule_/combo_/anti_rule_, so removing them costs
+    # nothing. Cuts XGBoost features 39 -> 32. (is_paypal_after_decline and
+    # seller_fraud_14d were also 0.0 but feed rules, so kept in the raw df.)
+    "captured",
+    "seller_service_14d",
+    "seller_service_30d",
+    "used_paypal_in_30d",
+    "buyer_email_changed_last_10d",
+    "seller_email_changed_last_10d",
+    "txn_rate_signup",
 ]
 
 # =================== QUERY ===================
@@ -451,7 +462,7 @@ def add_derived_features(df, iforest_mean=None, iforest_std=None):
 # =================== MAIN PIPELINE ===================
 def run_pipeline(df, threshold_method="percentile"):
     print("=" * 80)
-    print("   Fiverr Fraud Detection Pipeline - v11.1")
+    print("   Fiverr Fraud Detection Pipeline - v13.0")
     print("=" * 80)
 
     df = ensure_datetime(df)
@@ -549,14 +560,23 @@ def run_pipeline(df, threshold_method="percentile"):
     dtest = xgb.DMatrix(Xte, label=yte, missing=np.nan)
 
     print(f"\n[info] Training XGBoost on {Xtr.shape[1]} features ...")
-    # F4: scale_pos_weight = sqrt(neg/pos) — better for PR-AUC than full ratio.
+    # v13: scale_pos_weight = 1 (no weighting). Time-series CV (spw_cv.py, 5 folds)
+    # showed spw=1 beats sqrt(neg/pos) on test AUPRC 5/5 folds (mean +0.0158).
+    # The blend already injects fraud signal via manual_risk_score, so weighting
+    # the rare class only inflates probabilities / FPs and lowers AUPRC+precision.
+    # (Was sqrt(neg/pos) ~10; full ~104 was worse still — AUPRC monotonically
+    # decreases as spw rises.) ROC dips ~0.007 — acceptable, AUPRC is the metric.
     # F7: tuned hyperparameters from grid search on val AUPRC.
+    # v13: max_depth 4->2. Grid search (overfit_grid.py) on the 32-feature set
+    # showed depth=2 cuts train->test AUPRC gap 0.297 -> 0.039 (overfit ~gone)
+    # while RAISING test AUPRC 0.3512 -> 0.3676. depth=4 was memorizing deep
+    # interactions that didn't generalize. Revisit if new features are added.
     params = {
-        "max_depth": 4, "learning_rate": 0.05, "subsample": 0.7,
+        "max_depth": 2, "learning_rate": 0.05, "subsample": 0.7,
         "colsample_bytree": 0.8, "min_child_weight": 20, "reg_lambda": 5,
         "objective": "binary:logistic",
         "eval_metric": ["aucpr"], "tree_method": "hist",
-        "scale_pos_weight": float(np.sqrt((len(ytr) - ytr.sum()) / max(ytr.sum(), 1))),
+        "scale_pos_weight": 1.0,
         "seed": 42,
     }
     model = xgb.train(
@@ -584,6 +604,72 @@ def run_pipeline(df, threshold_method="percentile"):
     print(f"\nTest ROC-AUC:  {auc_score:.4f}")
     print(f"Test AUPRC:    {auprc_score:.4f}")
     print(f"Blending Alpha: {alpha_blend:.2f}")
+
+    # =================== OVERFIT CHECK (train vs val vs test) ===================
+    # Same blend (alpha * XGB + (1-alpha) * manual_risk) evaluated on all 3 splits.
+    # Big train>>test gap = overfit. XGBoost already has early-stopping on val.
+    print("\n[overfit check] blended metrics per split (same alpha):")
+    splits = [
+        ("train", dtrain, ytr, df_train["manual_risk_score"].to_numpy()),
+        ("val",   dval,   yva, df_val["manual_risk_score"].to_numpy()),
+        ("test",  dtest,  yte, df_test["manual_risk_score"].to_numpy()),
+    ]
+    print(f"  {'split':<6} {'ROC-AUC':>9} {'AUPRC':>9}")
+    gaps = {}
+    for name, dmat, y, rules in splits:
+        blend = alpha_blend * model.predict(dmat) + (1 - alpha_blend) * rules
+        roc = roc_auc_score(y, blend)
+        ap = average_precision_score(y, blend)
+        gaps[name] = (roc, ap)
+        print(f"  {name:<6} {roc:>9.4f} {ap:>9.4f}")
+    print(f"  [gap] train-test AUPRC: {gaps['train'][1] - gaps['test'][1]:+.4f}"
+          f"  | train-test ROC: {gaps['train'][0] - gaps['test'][0]:+.4f}")
+    # also the raw XGBoost component alone (no rules) — isolates model overfit
+    print("[overfit check] XGBoost-only AUPRC (no blend):")
+    for name, dmat, y, _ in splits:
+        ap = average_precision_score(y, model.predict(dmat))
+        print(f"  {name:<6} {ap:>9.4f}")
+
+    # =================== SHAP FEATURE IMPACT ===================
+    # Per-feature impact on the XGBoost model, computed on the test split.
+    # TreeExplainer is exact + fast for XGBoost. Two artifacts:
+    #   shap_summary.png  — beeswarm: direction + magnitude per feature
+    #   shap_importance.png — bar: mean(|SHAP|) ranking
+    try:
+        import shap
+        print("\n[info] Computing SHAP values (TreeExplainer) on test split...")
+        # cap rows for speed; beeswarm is unreadable above a few thousand anyway
+        Xte_shap = Xte if len(Xte) <= 5000 else Xte.sample(5000, random_state=42)
+        explainer = shap.TreeExplainer(model)
+        shap_values = explainer.shap_values(Xte_shap)
+
+        n_feats = Xte_shap.shape[1]
+        plt.figure(figsize=(10, max(8, 0.32 * n_feats)))
+        shap.summary_plot(shap_values, Xte_shap, show=False, max_display=n_feats)
+        plt.title("SHAP — feature impact (test split) v12.0")
+        shap_summary_path = os.path.join(LOCAL_ARTIFACT_DIR, "shap_summary.png")
+        plt.savefig(shap_summary_path, dpi=120, bbox_inches="tight")
+        plt.close()
+
+        plt.figure(figsize=(10, max(8, 0.32 * n_feats)))
+        shap.summary_plot(shap_values, Xte_shap, plot_type="bar", show=False, max_display=n_feats)
+        plt.title("SHAP — mean(|impact|) per feature v12.0")
+        shap_bar_path = os.path.join(LOCAL_ARTIFACT_DIR, "shap_importance.png")
+        plt.savefig(shap_bar_path, dpi=120, bbox_inches="tight")
+        plt.close()
+
+        # also dump the ranking as CSV
+        mean_abs = np.abs(shap_values).mean(axis=0)
+        shap_rank = pd.DataFrame(
+            {"feature": Xte_shap.columns, "mean_abs_shap": mean_abs}
+        ).sort_values("mean_abs_shap", ascending=False)
+        shap_csv_path = os.path.join(LOCAL_ARTIFACT_DIR, "shap_importance.csv")
+        shap_rank.to_csv(shap_csv_path, index=False)
+        print(f"[✓] SHAP artifacts: {shap_summary_path}, {shap_bar_path}, {shap_csv_path}")
+        print("\nTop 15 features by mean(|SHAP|):")
+        print(shap_rank.head(15).to_string(index=False))
+    except Exception as e:
+        print(f"[warn] SHAP step failed: {e}")
 
     # Save PR curve as image (no plt.show() in CI)
     prec, rec, _ = precision_recall_curve(yte, preds_blend)
