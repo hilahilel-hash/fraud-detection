@@ -336,11 +336,15 @@ def explain_transaction_scores(df, model, features, weights, thresholds):
 
     df["dominant_factor"] = df.apply(dom, axis=1)
 
+    # v13: percentile severity labels (robust to spw=1 score scale).
+    _crit = df["final_score"].quantile(0.99) if len(df) else 1.0
+    _high = df["final_score"].quantile(0.95) if len(df) else 1.0
+    _med  = df["final_score"].quantile(0.90) if len(df) else 1.0
     def explain_cat(row):
         s = row["final_score"]
-        if s >= 0.8: return "CRITICAL"
-        if s >= 0.6: return "HIGH"
-        if s >= 0.4: return "MEDIUM"
+        if s >= _crit: return "CRITICAL"
+        if s >= _high: return "HIGH"
+        if s >= _med:  return "MEDIUM"
         return "LOW"
 
     df["risk_explanation"] = df.apply(explain_cat, axis=1)
@@ -366,24 +370,32 @@ def generate_summary_report(df):
     print("\n" + "=" * 80)
     print(" FRAUD DETECTION SUMMARY REPORT")
     print("=" * 80)
-    print(f"Mean final score:         {df['final_score'].mean():.4f}")
-    print(f"Transactions > 0.7:       {(df['final_score'] > 0.7).sum()}")
-    print(f"Transactions > 0.5:       {(df['final_score'] > 0.5).sum()}")
+    # v13: percentile-based tiers, not fixed cutoffs. scale_pos_weight=1 made
+    # raw scores calibrated (low absolute values), so fixed 0.5/0.7/0.8 cutoffs
+    # broke. Percentiles are robust to score scale + track review capacity.
+    crit_cut = df["final_score"].quantile(0.99) if len(df) else 0.0
+    high_cut = df["final_score"].quantile(0.95) if len(df) else 0.0
+    print(f"Mean final score:              {df['final_score'].mean():.4f}")
+    print(f"Critical (top 1%, >={crit_cut:.3f}): {(df['final_score'] >= crit_cut).sum()}")
+    print(f"High (top 5%, >={high_cut:.3f}):     {(df['final_score'] >= high_cut).sum()}")
     print("\n[Dominant factors]\n", df["dominant_factor"].value_counts().to_string())
     print("=" * 80)
 
 
 def generate_email_html(df, date_str):
     """Generate an HTML email summary and save to /tmp/email_summary.html."""
-    critical = df[df["final_score"] >= 0.8]
-    high     = df[(df["final_score"] >= 0.6) & (df["final_score"] < 0.8)]
+    # v13: percentile tiers (see generate_summary_report) — robust to spw=1 scale.
+    crit_cut = df["final_score"].quantile(0.99) if len(df) else 0.0
+    high_cut = df["final_score"].quantile(0.95) if len(df) else 0.0
+    critical = df[df["final_score"] >= crit_cut]
+    high     = df[(df["final_score"] >= high_cut) & (df["final_score"] < crit_cut)]
     total    = len(df)
 
     top5 = df.head(5)
     rows_html = ""
     for _, row in top5.iterrows():
         score = row.get("final_score", 0)
-        color = "#c0392b" if score >= 0.8 else "#e67e22" if score >= 0.6 else "#27ae60"
+        color = "#c0392b" if score >= crit_cut else "#e67e22" if score >= high_cut else "#27ae60"
         rows_html += f"""
         <tr>
           <td>{row.get('order_id', '-')}</td>
@@ -401,11 +413,11 @@ def generate_email_html(df, date_str):
     <table style="border-collapse:collapse;margin-bottom:20px">
       <tr>
         <td style="padding:10px 20px;background:#c0392b;color:white;border-radius:6px;text-align:center">
-          <b style="font-size:24px">{len(critical)}</b><br>CRITICAL (&ge;0.8)
+          <b style="font-size:24px">{len(critical)}</b><br>CRITICAL (top 1%)
         </td>
         <td style="width:12px"></td>
         <td style="padding:10px 20px;background:#e67e22;color:white;border-radius:6px;text-align:center">
-          <b style="font-size:24px">{len(high)}</b><br>HIGH (0.6–0.8)
+          <b style="font-size:24px">{len(high)}</b><br>HIGH (top 5%)
         </td>
         <td style="width:12px"></td>
         <td style="padding:10px 20px;background:#7f8c8d;color:white;border-radius:6px;text-align:center">
