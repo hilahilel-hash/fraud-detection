@@ -329,7 +329,9 @@ def explain_transaction_scores(df, model, features, weights, thresholds):
         df["ml_detailed_explanation"] = df["ml_positive_signals"] = df["ml_negative_signals"] = "unavailable"
 
     def dom(row):
-        m, r, a = row["fraud_score_raw"], row["manual_risk_score"], row["alpha_dynamic"]
+        # v13.1: use normalized ML score (same scale as rules) so dominance reflects
+        # the actual blend, not the tiny raw probability.
+        m, r, a = row.get("fraud_score_norm", row["fraud_score_raw"]), row["manual_risk_score"], row["alpha_dynamic"]
         if a * m > (1 - a) * r * 2: return "ML_Dominant"
         if (1 - a) * r > a * m * 2: return "Rules_Dominant"
         return "Balanced_Hybrid"
@@ -476,11 +478,17 @@ def run_daily_pipeline(df):
         manual_risk_mx = norm_stats.get("manual_risk_mx")
         iforest_mean = norm_stats.get("iforest_mean")
         iforest_std = norm_stats.get("iforest_std")
+        # v13.1: ML-score normalization range (train q01-q99). Falls back to None
+        # if an older weekly produced the artifact — then we skip ML normalization.
+        ml_lo = norm_stats.get("ml_lo")
+        ml_hi = norm_stats.get("ml_hi")
         print(f"[info] Loaded normalization stats from weekly: "
               f"manual_risk[{manual_risk_mn:.3f}, {manual_risk_mx:.3f}], "
-              f"iforest mean={iforest_mean:.4f}, std={iforest_std:.4f}")
+              f"iforest mean={iforest_mean:.4f}, std={iforest_std:.4f}, "
+              f"ml[{ml_lo}, {ml_hi}]")
     except FileNotFoundError:
         manual_risk_mn = manual_risk_mx = iforest_mean = iforest_std = None
+        ml_lo = ml_hi = None
         print("[warn] normalization_stats.joblib not found — falling back to per-day "
               "normalization (run a v12 weekly to fix).")
 
@@ -545,6 +553,16 @@ def run_daily_pipeline(df):
 
     dmatrix = xgb.DMatrix(df.reindex(columns=features), missing=np.nan)
     df["fraud_score_raw"] = model.predict(dmatrix)
+    # v13.1: normalize ML score to [0,1] with TRAIN q01-q99 (from weekly), so it
+    # shares manual_risk's scale in the blend. With scale_pos_weight=1 the raw
+    # probabilities are tiny, so blending them directly let manual_risk dominate
+    # and made the top fraud's final_score look alarmingly low. If the stats are
+    # missing (older weekly artifact) we keep the raw score for backward compat.
+    if ml_lo is not None and ml_hi is not None:
+        df["fraud_score_norm"] = np.clip(
+            (df["fraud_score_raw"] - ml_lo) / (ml_hi - ml_lo + 1e-9), 0.0, 1.0)
+    else:
+        df["fraud_score_norm"] = df["fraud_score_raw"]
 
     conditions = [
         df.get("rule_has_blocked_clone", False),
@@ -558,7 +576,7 @@ def run_daily_pipeline(df):
     ]
     df["alpha_dynamic"] = np.select(conditions, choices, default=base_alpha)
     df["final_score"] = (
-        df["alpha_dynamic"] * df["fraud_score_raw"] +
+        df["alpha_dynamic"] * df["fraud_score_norm"] +
         (1 - df["alpha_dynamic"]) * df["manual_risk_score"]
     )
 
@@ -595,7 +613,7 @@ if __name__ == "__main__":
         "seller_service_14d", "seller_message_count", "buyer_message_count",
         "messages_in_closest_order", "all_messages_in_all_orders",
         "total_messages_sent_by_buyer_per_conversation", "affiliates",
-        "fraud_score_raw", "manual_risk_score", "final_score", "alpha_dynamic",
+        "fraud_score_raw", "fraud_score_norm", "manual_risk_score", "final_score", "alpha_dynamic",
     ]
     explanation_cols = [
         "risk_explanation", "dominant_factor", "manual_risk_contribution",

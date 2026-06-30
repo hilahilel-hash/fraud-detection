@@ -584,7 +584,21 @@ def run_pipeline(df, threshold_method="percentile"):
         evals=[(dval, "val")], early_stopping_rounds=50, verbose_eval=100,
     )
 
-    preds_model_val = model.predict(dval)
+    # v13.1: normalize the ML score to [0,1] using TRAIN q01-q99, so it shares
+    # manual_risk's scale before blending. With scale_pos_weight=1 the raw
+    # probabilities sit near 0 (calibrated to the 0.8% base rate), so an
+    # un-normalized blend was rules-dominated regardless of alpha and the top
+    # fraud got an alarmingly low final_score. Monotonic transform -> ML ranking
+    # unchanged; refit alpha. q01/q99 (not min/max) is robust to a single outlier.
+    # ml_lo/ml_hi saved to normalization_stats so daily applies the same mapping.
+    p_train = model.predict(dtrain)
+    ml_lo = float(np.quantile(p_train, 0.01))
+    ml_hi = float(np.quantile(p_train, 0.99))
+
+    def ml_norm(p):
+        return np.clip((p - ml_lo) / (ml_hi - ml_lo + 1e-9), 0.0, 1.0)
+
+    preds_model_val = ml_norm(model.predict(dval))
     preds_rules_val = df_val["manual_risk_score"].to_numpy()
     best_alpha, best_metric = 0.5, -1
     for a in np.arange(0.1, 0.95, 0.05):
@@ -595,7 +609,7 @@ def run_pipeline(df, threshold_method="percentile"):
 
     alpha_blend = best_alpha
     preds_blend = (
-        alpha_blend * model.predict(dtest) +
+        alpha_blend * ml_norm(model.predict(dtest)) +
         (1 - alpha_blend) * df_test["manual_risk_score"].to_numpy()
     )
 
@@ -617,7 +631,7 @@ def run_pipeline(df, threshold_method="percentile"):
     print(f"  {'split':<6} {'ROC-AUC':>9} {'AUPRC':>9}")
     gaps = {}
     for name, dmat, y, rules in splits:
-        blend = alpha_blend * model.predict(dmat) + (1 - alpha_blend) * rules
+        blend = alpha_blend * ml_norm(model.predict(dmat)) + (1 - alpha_blend) * rules
         roc = roc_auc_score(y, blend)
         ap = average_precision_score(y, blend)
         gaps[name] = (roc, ap)
@@ -702,6 +716,9 @@ def run_pipeline(df, threshold_method="percentile"):
         "manual_risk_mx": manual_risk_mx,
         "iforest_mean": iforest_mean,
         "iforest_std": iforest_std,
+        # v13.1: ML-score normalization range (train q01-q99) for daily's blend.
+        "ml_lo": ml_lo,
+        "ml_hi": ml_hi,
     }
 
     artifact_paths = [
