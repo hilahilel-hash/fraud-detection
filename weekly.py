@@ -734,9 +734,16 @@ def run_pipeline(df, threshold_method="percentile"):
         plot_path,
     ]
 
-    pd.DataFrame({"y_true": yte, "preds_blend": preds_blend}).to_csv(
-        os.path.join(LOCAL_ARTIFACT_DIR, "fraud_predictions.csv"), index=False
+    test_out = Xte.copy()
+    test_out["y_true"] = yte.values
+    test_out["preds_blend"] = preds_blend
+    test_out["score_bucket"] = pd.cut(
+        test_out["preds_blend"],
+        bins=[0, 0.05, 0.1, 0.2, 0.4, 0.6, 0.85, 1.01],
+        labels=["hidden", "very_low", "low", "mid_low", "mid", "mid_high", "confident"],
+        right=False,
     )
+    test_out.to_csv(os.path.join(LOCAL_ARTIFACT_DIR, "fraud_predictions.csv"), index=False)
     artifact_paths.append(os.path.join(LOCAL_ARTIFACT_DIR, "fraud_predictions.csv"))
 
     importances = model.get_score(importance_type="weight")
