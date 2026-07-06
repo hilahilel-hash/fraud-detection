@@ -13,3 +13,4 @@ matplotlib
 joblib
 xlsxwriter
 category_encoders
+shap
