@@ -660,14 +660,14 @@ def run_pipeline(df, threshold_method="percentile"):
         n_feats = Xte_shap.shape[1]
         plt.figure(figsize=(10, max(8, 0.32 * n_feats)))
         shap.summary_plot(shap_values, Xte_shap, show=False, max_display=n_feats)
-        plt.title("SHAP — feature impact (test split) v12.0")
+        plt.title("SHAP — feature impact (test split) v13.0")
         shap_summary_path = os.path.join(LOCAL_ARTIFACT_DIR, "shap_summary.png")
         plt.savefig(shap_summary_path, dpi=120, bbox_inches="tight")
         plt.close()
 
         plt.figure(figsize=(10, max(8, 0.32 * n_feats)))
         shap.summary_plot(shap_values, Xte_shap, plot_type="bar", show=False, max_display=n_feats)
-        plt.title("SHAP — mean(|impact|) per feature v12.0")
+        plt.title("SHAP — mean(|impact|) per feature v13.0")
         shap_bar_path = os.path.join(LOCAL_ARTIFACT_DIR, "shap_importance.png")
         plt.savefig(shap_bar_path, dpi=120, bbox_inches="tight")
         plt.close()
