@@ -1,0 +1,148 @@
+name: Investigate Hidden Fraud
+
+on:
+  workflow_dispatch:
+
+jobs:
+  investigate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - run: pip install google-cloud-bigquery db-dtypes pyarrow pandas
+
+      - name: Run investigation queries
+        env:
+          GCP_CREDENTIALS: ${{ secrets.GCP_CREDENTIALS }}
+        run: |
+          python3 - << 'PYEOF'
+          import os, json, pandas as pd
+          from google.oauth2.credentials import Credentials
+          from google.cloud import bigquery
+
+          creds_info = json.loads(os.environ["GCP_CREDENTIALS"])
+          creds = Credentials(
+              token=None,
+              refresh_token=creds_info["refresh_token"],
+              token_uri=creds_info["token_uri"],
+              client_id=creds_info["client_id"],
+              client_secret=creds_info["client_secret"],
+          )
+          client = bigquery.Client(project="fiverr-bq-payments-adhoc-prod", credentials=creds)
+          os.makedirs("/tmp/investigation", exist_ok=True)
+
+          # ── Query 1: first_time_payer ──────────────────────────────────────
+          q1 = """
+          WITH user_payer_history AS (
+            SELECT user_id, payer_provider_payer_id, MIN(date_hour) AS first_seen
+            FROM `fiverr-dwh-data-prod.dwh.dm_paypal_fraud_weekly`
+            WHERE _PARTITIONdate BETWEEN current_date() - 365 AND current_date() - 1
+            GROUP BY 1, 2
+          ),
+          current_week AS (
+            SELECT
+              w.user_id, w.date_hour, w.has_chargeback,
+              w.days_since_signup, w.buyer_count_clone, w.payment_amount,
+              DATE_DIFF(DATE(w.date_hour), DATE(h.first_seen), DAY) AS payer_age_days
+            FROM `fiverr-dwh-data-prod.dwh.dm_paypal_fraud_weekly` w
+            LEFT JOIN user_payer_history h
+              ON w.user_id = h.user_id
+              AND w.payer_provider_payer_id = h.payer_provider_payer_id
+            WHERE w._PARTITIONdate = current_date() - 1
+          )
+          SELECT
+            has_chargeback,
+            CASE WHEN payer_age_days = 0 THEN 'first_time_payer'
+                 WHEN payer_age_days <= 7 THEN 'payer_new_7d'
+                 ELSE 'known_payer' END AS payer_familiarity,
+            COUNT(*) AS n,
+            ROUND(AVG(days_since_signup), 0) AS avg_account_age,
+            ROUND(AVG(buyer_count_clone), 2) AS avg_clone,
+            ROUND(AVG(payment_amount), 2) AS avg_amount
+          FROM current_week
+          GROUP BY 1, 2
+          ORDER BY 1 DESC, 3 DESC
+          """
+          df1 = client.query(q1).to_dataframe()
+          df1.to_csv("/tmp/investigation/q1_first_time_payer.csv", index=False)
+          print("Q1 done:", df1.shape)
+          print(df1.to_string())
+
+          # ── Query 2: first_time_seller ─────────────────────────────────────
+          q2 = """
+          WITH buyer_seller_history AS (
+            SELECT user_id, seller_id, MIN(date_hour) AS first_txn
+            FROM `fiverr-dwh-data-prod.dwh.dm_paypal_fraud_weekly`
+            WHERE _PARTITIONdate BETWEEN current_date() - 365 AND current_date() - 1
+              AND has_chargeback = 0
+            GROUP BY 1, 2
+          )
+          SELECT
+            w.has_chargeback,
+            CASE WHEN h.first_txn IS NULL THEN 'never_bought_from_seller'
+                 WHEN DATE_DIFF(DATE(w.date_hour), DATE(h.first_txn), DAY) = 0 THEN 'first_time_today'
+                 ELSE 'repeat_buyer' END AS seller_familiarity,
+            COUNT(*) AS n,
+            ROUND(AVG(w.days_since_signup), 0) AS avg_account_age,
+            ROUND(AVG(w.payment_amount), 2) AS avg_amount,
+            ROUND(AVG(w.buyer_count_clone), 2) AS avg_clone
+          FROM `fiverr-dwh-data-prod.dwh.dm_paypal_fraud_weekly` w
+          LEFT JOIN buyer_seller_history h ON w.user_id = h.user_id AND w.seller_id = h.seller_id
+          WHERE w._PARTITIONdate = current_date() - 1
+          GROUP BY 1, 2
+          ORDER BY 1 DESC, 3 DESC
+          """
+          df2 = client.query(q2).to_dataframe()
+          df2.to_csv("/tmp/investigation/q2_first_time_seller.csv", index=False)
+          print("\nQ2 done:", df2.shape)
+          print(df2.to_string())
+
+          # ── Query 3: amount spike vs personal history ──────────────────────
+          q3 = """
+          WITH user_history AS (
+            SELECT user_id,
+              AVG(payment_amount) AS personal_avg,
+              STDDEV(payment_amount) AS personal_std,
+              MAX(payment_amount) AS personal_max
+            FROM `fiverr-dwh-data-prod.dwh.dm_paypal_fraud_weekly`
+            WHERE _PARTITIONdate BETWEEN current_date() - 90 AND current_date() - 2
+              AND has_chargeback = 0
+            GROUP BY 1
+            HAVING COUNT(*) >= 3
+          )
+          SELECT
+            w.has_chargeback,
+            CASE
+              WHEN w.payment_amount > h.personal_avg + 3 * h.personal_std THEN 'extreme_spike_3std'
+              WHEN w.payment_amount > h.personal_avg + 2 * h.personal_std THEN 'spike_2std'
+              WHEN w.payment_amount > h.personal_max THEN 'above_personal_max'
+              WHEN h.personal_avg IS NULL THEN 'no_history'
+              ELSE 'normal_range'
+            END AS amount_vs_history,
+            COUNT(*) AS n,
+            ROUND(AVG(w.days_since_signup), 0) AS avg_account_age,
+            ROUND(AVG(w.payment_amount), 2) AS avg_amount
+          FROM `fiverr-dwh-data-prod.dwh.dm_paypal_fraud_weekly` w
+          LEFT JOIN user_history h ON w.user_id = h.user_id
+          WHERE w._PARTITIONdate = current_date() - 1
+          GROUP BY 1, 2
+          ORDER BY 1 DESC, 3 DESC
+          """
+          df3 = client.query(q3).to_dataframe()
+          df3.to_csv("/tmp/investigation/q3_amount_spike.csv", index=False)
+          print("\nQ3 done:", df3.shape)
+          print(df3.to_string())
+
+          print("\n✓ All queries done.")
+          PYEOF
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hidden-fraud-investigation
+          path: /tmp/investigation/
+          retention-days: 7
