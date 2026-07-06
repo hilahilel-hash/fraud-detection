@@ -14,7 +14,7 @@ jobs:
         with:
           python-version: '3.11'
 
-      - run: pip install google-cloud-bigquery db-dtypes pyarrow pandas
+      - run: pip install google-cloud-bigquery db-dtypes pyarrow pandas google-auth google-auth-httplib2
 
       - name: Run investigation queries
         env:
@@ -25,14 +25,16 @@ jobs:
           from google.oauth2.credentials import Credentials
           from google.cloud import bigquery
 
+          from google.auth.transport.requests import Request
           creds_info = json.loads(os.environ["GCP_CREDENTIALS"])
           creds = Credentials(
               token=None,
               refresh_token=creds_info["refresh_token"],
-              token_uri=creds_info["token_uri"],
+              token_uri=creds_info.get("token_uri", "https://oauth2.googleapis.com/token"),
               client_id=creds_info["client_id"],
               client_secret=creds_info["client_secret"],
           )
+          creds.refresh(Request())
           client = bigquery.Client(project="fiverr-bq-payments-adhoc-prod", credentials=creds)
           os.makedirs("/tmp/investigation", exist_ok=True)
 
