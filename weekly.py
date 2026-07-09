@@ -95,6 +95,9 @@ ID_COLS_TO_EXCLUDE = [
     "buyer_email_changed_last_10d",
     "seller_email_changed_last_10d",
     "txn_rate_signup",
+    # users_sharing_ip_30d: SHAP=0.0, fraud rate inversely correlated with value — shared IPs
+    # are VPN/proxy (lower fraud rate), unique IPs score highest. No predictive signal.
+    "users_sharing_ip_30d",
 ]
 
 # =================== QUERY ===================
